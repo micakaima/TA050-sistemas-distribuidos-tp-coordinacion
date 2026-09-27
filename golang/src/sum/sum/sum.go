@@ -23,7 +23,7 @@ type SumConfig struct {
 type Sum struct {
 	inputQueue     middleware.Middleware
 	outputExchange middleware.Middleware
-	fruitItemMap   map[string]fruititem.FruitItem
+	fruitItemMaps  map[string]map[string]fruititem.FruitItem
 }
 
 func NewSum(config SumConfig) (*Sum, error) {
@@ -48,7 +48,7 @@ func NewSum(config SumConfig) (*Sum, error) {
 	return &Sum{
 		inputQueue:     inputQueue,
 		outputExchange: outputExchange,
-		fruitItemMap:   map[string]fruititem.FruitItem{},
+		fruitItemMaps:  map[string]map[string]fruititem.FruitItem{},
 	}, nil
 }
 
@@ -74,15 +74,18 @@ func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 		return
 	}
 
-	if err := sum.handleDataMessage(fruitRecords); err != nil {
+	if err := sum.handleDataMessage(clientID, fruitRecords); err != nil {
 		slog.Error("While handling data message", "err", err)
 	}
 }
 
 func (sum *Sum) handleEndOfRecordMessage(clientID string) error {
 	slog.Info("Received End Of Records message")
-	for key := range sum.fruitItemMap {
-		fruitRecord := []fruititem.FruitItem{sum.fruitItemMap[key]}
+
+	// TODO: revisar si se puede mandar un batch de frutas en lugar de una por una
+	fruits := sum.fruitItemMaps[clientID]
+	for key := range fruits {
+		fruitRecord := []fruititem.FruitItem{fruits[key]}
 		message, err := inner.SerializeMessage(clientID, fruitRecord)
 		if err != nil {
 			slog.Debug("While serializing message", "err", err)
@@ -104,16 +107,21 @@ func (sum *Sum) handleEndOfRecordMessage(clientID string) error {
 		slog.Debug("While sending EOF message", "err", err)
 		return err
 	}
+	delete(sum.fruitItemMaps, clientID)
 	return nil
 }
 
-func (sum *Sum) handleDataMessage(fruitRecords []fruititem.FruitItem) error {
+func (sum *Sum) handleDataMessage(clientID string, fruitRecords []fruititem.FruitItem) error {
+	if _, ok := sum.fruitItemMaps[clientID]; !ok {
+		sum.fruitItemMaps[clientID] = map[string]fruititem.FruitItem{}
+	}
+	fruits := sum.fruitItemMaps[clientID]
 	for _, fruitRecord := range fruitRecords {
-		_, ok := sum.fruitItemMap[fruitRecord.Fruit]
+		_, ok := fruits[fruitRecord.Fruit]
 		if ok {
-			sum.fruitItemMap[fruitRecord.Fruit] = sum.fruitItemMap[fruitRecord.Fruit].Sum(fruitRecord)
+			fruits[fruitRecord.Fruit] = fruits[fruitRecord.Fruit].Sum(fruitRecord)
 		} else {
-			sum.fruitItemMap[fruitRecord.Fruit] = fruitRecord
+			fruits[fruitRecord.Fruit] = fruitRecord
 		}
 	}
 	return nil

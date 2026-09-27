@@ -8,6 +8,8 @@ import (
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 )
 
+const ClientIDKey string = "clientID"
+
 func serializeJson(message []interface{}) ([]byte, error) {
 	return json.Marshal(message)
 }
@@ -20,8 +22,9 @@ func deserializeJson(message []byte) ([]interface{}, error) {
 	return data, nil
 }
 
-func SerializeMessage(fruitRecords []fruititem.FruitItem) (*middleware.Message, error) {
-	data := []interface{}{}
+func SerializeMessage(clientID string, fruitRecords []fruititem.FruitItem) (*middleware.Message, error) {
+	data := []interface{}{[]interface{}{ClientIDKey, clientID}}
+
 	for _, fruitRecord := range fruitRecords {
 		datum := []interface{}{
 			fruitRecord.Fruit,
@@ -39,32 +42,43 @@ func SerializeMessage(fruitRecords []fruititem.FruitItem) (*middleware.Message, 
 	return &message, nil
 }
 
-func DeserializeMessage(message *middleware.Message) ([]fruititem.FruitItem, bool, error) {
+func DeserializeMessage(message *middleware.Message) (string, []fruititem.FruitItem, bool, error) {
 	data, err := deserializeJson([]byte((*message).Body))
 	if err != nil {
-		return nil, false, err
+		return "", nil, false, err
 	}
 
+	clientID := ""
 	fruitRecords := []fruititem.FruitItem{}
-	for _, datum := range data {
-		fruitPair, ok := datum.([]interface{})
-		if !ok {
-			return nil, false, errors.New("Datum is not an array")
+	for i, datum := range data {
+		pair, ok := datum.([]interface{})
+		if !ok || len(pair) != 2 {
+			return clientID, nil, false, errors.New("Invalid array")
 		}
 
-		fruit, ok := fruitPair[0].(string)
+		key, ok := pair[0].(string)
 		if !ok {
-			return nil, false, errors.New("Datum is not a (fruit, amount) pair")
+			return clientID, nil, false, errors.New("Invalid Key")
 		}
+		if i == 0 {
+			if key != ClientIDKey {
+				return clientID, nil, false, errors.New("First element must be client ID")
+			}
+			clientID, ok = pair[1].(string)
+			if !ok {
+			 	return clientID, nil, false, errors.New("Invalid clientID")
+			}
 
-		fruitAmount, ok := fruitPair[1].(float64)
-		if !ok {
-			return nil, false, errors.New("Datum is not a (fruit, amount) pair")
-		}
+		} else {
+			amount, ok := pair[1].(float64)
+			if !ok {
+				return clientID, nil, false, errors.New("Amount is not a number")
+			}
 
-		fruitRecord := fruititem.FruitItem{Fruit: fruit, Amount: uint32(fruitAmount)}
-		fruitRecords = append(fruitRecords, fruitRecord)
+			fruitRecord := fruititem.FruitItem{Fruit: key, Amount: uint32(amount)}
+			fruitRecords = append(fruitRecords, fruitRecord)
+		}	
 	}
 
-	return fruitRecords, len(fruitRecords) == 0, nil
+	return clientID, fruitRecords, len(fruitRecords) == 0, nil
 }

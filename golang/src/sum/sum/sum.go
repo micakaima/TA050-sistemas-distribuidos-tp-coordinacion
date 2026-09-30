@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"hash/fnv"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
@@ -21,15 +22,19 @@ type SumConfig struct {
 	AggregationPrefix string
 }
 
+//TODO: revisar si conviene guardar la config en el struct
 type Sum struct {
 	inputQueue     middleware.Middleware
-	outputExchange middleware.Middleware
+	outputExchange *middleware.ExchangeMiddleware
 	fruitItemMaps  map[string]map[string]fruititem.FruitItem
 
 	controlInQueue middleware.Middleware
 	controlOutQueue middleware.Middleware
 	sendingEOF map[string]bool
 	mutex sync.Mutex
+
+	aggregationAmount int
+	aggregationPrefix string
 }
 
 func NewSum(config SumConfig) (*Sum, error) {
@@ -61,7 +66,7 @@ func NewSum(config SumConfig) (*Sum, error) {
 		outputExchangeRouteKeys[i] = fmt.Sprintf("%s_%d", config.AggregationPrefix, i)
 	}
 
-	outputExchange, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, outputExchangeRouteKeys, connSettings)
+	outputExchange, err := middleware.NewExchangeMiddleware(config.AggregationPrefix, outputExchangeRouteKeys, connSettings)
 	if err != nil {
 		inputQueue.Close() 
 		controlInQueue.Close()
@@ -76,6 +81,8 @@ func NewSum(config SumConfig) (*Sum, error) {
 		controlInQueue: controlInQueue,
 		controlOutQueue: controlOutQueue, 
 		sendingEOF:   map[string]bool{},
+		aggregationAmount: config.AggregationAmount,
+		aggregationPrefix: config.AggregationPrefix,
 	}, nil
 }
 
@@ -126,14 +133,15 @@ func (sum *Sum) handleEndOfRecordMessage(clientID string) error {
 
 	// TODO: revisar si se puede mandar un batch de frutas en lugar de una por una
 	fruits := sum.fruitItemMaps[clientID]
-	for key := range fruits {
-		fruitRecord := []fruititem.FruitItem{fruits[key]}
+	for fruit := range fruits {
+		fruitRecord := []fruititem.FruitItem{fruits[fruit]}
 		message, err := inner.SerializeMessage(clientID, fruitRecord)
 		if err != nil {
 			slog.Debug("While serializing message", "err", err)
 			return err
 		}
-		if err := sum.outputExchange.Send(*message); err != nil {
+		key := sum.routeKeyForFruit(fruit, clientID) 
+		if err := sum.outputExchange.SendToKey(*message, key); err != nil {
 			slog.Debug("While sending message", "err", err)
 			return err
 		}
@@ -208,4 +216,12 @@ func sendEOFMessage(clientID string, midd middleware.Middleware) error {
 		return err  
 	}
 	return nil
+}
+
+func (sum *Sum) routeKeyForFruit(fruit string) string {
+	// TODO: revisar si es necesario agragar clientID
+	h := fnv.New32a()
+	h.Write([]byte(fruit))
+	idx := int(h.Sum32()) % sum.aggregationAmount
+	return fmt.Sprintf("%s_%d", sum.aggregationPrefix, idx)
 }

@@ -15,7 +15,7 @@ type ExchangeMiddleware struct {
 	consumerTag	string
 }
 
-func NewExchangeMiddleware(exchange string, keys []string, connectionSettings ConnSettings) (Middleware, error) {
+func NewExchangeMiddleware(exchange string, keys []string, connectionSettings ConnSettings) (*ExchangeMiddleware, error) {
 	url_path := fmt.Sprintf("amqp://guest:guest@%s:%d/",  connectionSettings.Hostname, connectionSettings.Port)
  	conn, err := amqp.Dial(url_path)
 	if err != nil {
@@ -136,27 +136,11 @@ func (e *ExchangeMiddleware) StopConsuming() error {
 }
 
 func (e *ExchangeMiddleware) Send(msg Message) error {
-	if e.conn.IsClosed() {
-		return ErrMessageMiddlewareDisconnected
-	}
 	for _, key := range e.keys {
-		err := e.ch.Publish(
-			e.exchange, // exchange
-			key,     	// routing key
-			false, 		// mandatory
-			false,  	// immediate
-			amqp.Publishing{
-					ContentType: "text/plain",
-					Body:        []byte(msg.Body),
-			})
-		if err != nil {
-			if e.conn.IsClosed() {
-				return ErrMessageMiddlewareDisconnected
-			}
-			return ErrMessageMiddlewareMessage
-		}	
-	}
-	
+		if err := e.SendToKey(msg, key); err != nil{
+			return err
+		}
+	}	
 	return nil
 }
 
@@ -175,5 +159,27 @@ func (e *ExchangeMiddleware) Close() error {
 	}
 	e.ch = nil
 	e.conn = nil
+	return nil
+}
+
+func (e *ExchangeMiddleware) SendToKey(msg Message, key string) error {
+	if e.conn.IsClosed() {
+		return ErrMessageMiddlewareDisconnected
+	}
+	err := e.ch.Publish(
+		e.exchange, // exchange
+		key,     	// routing key
+		false, 		// mandatory
+		false,  	// immediate
+		amqp.Publishing{
+				ContentType: "text/plain",
+				Body:        []byte(msg.Body),
+		})
+	if err != nil {
+		if e.conn.IsClosed() {
+			return ErrMessageMiddlewareDisconnected
+		}
+		return ErrMessageMiddlewareMessage
+	}	
 	return nil
 }

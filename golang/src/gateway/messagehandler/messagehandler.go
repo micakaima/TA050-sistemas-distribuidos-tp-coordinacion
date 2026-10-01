@@ -14,7 +14,6 @@ type MessageHandler struct {
 }
 
 func NewMessageHandler() MessageHandler {
-	// TODO: optimizar la asignacion de el ID
 	id := fmt.Sprintf("%d", rand.Uint64())
 	return MessageHandler{clientID: id}
 }

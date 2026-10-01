@@ -25,7 +25,6 @@ type SumConfig struct {
 	AggregationPrefix string
 }
 
-// TODO: revisar si conviene guardar la config en el struct
 type Sum struct {
 	inputQueue     middleware.Middleware
 	outputExchange *middleware.ExchangeMiddleware
@@ -156,7 +155,6 @@ func (sum *Sum) handleEndOfRecordMessage(clientID string) error {
 
 	slog.Info("Received End Of Records message")
 
-	// TODO: revisar si se puede mandar un batch de frutas en lugar de una por una
 	fruits := sum.fruitItemMaps[clientID]
 	for fruit := range fruits {
 		fruitRecord := []fruititem.FruitItem{fruits[fruit]}
@@ -244,7 +242,6 @@ func sendEOFMessage(clientID string, midd middleware.Middleware) error {
 }
 
 func (sum *Sum) routeKeyForFruit(fruit string) string {
-	// TODO: revisar si es necesario agragar clientID
 	h := fnv.New32a()
 	h.Write([]byte(fruit))
 	idx := int(h.Sum32()) % sum.aggregationAmount

@@ -66,7 +66,7 @@ func DeserializeMessage(message *middleware.Message) (string, []fruititem.FruitI
 			}
 			clientID, ok = pair[1].(string)
 			if !ok {
-			 	return clientID, nil, false, errors.New("Invalid clientID")
+				return clientID, nil, false, errors.New("Invalid clientID")
 			}
 
 		} else {
@@ -77,7 +77,7 @@ func DeserializeMessage(message *middleware.Message) (string, []fruititem.FruitI
 
 			fruitRecord := fruititem.FruitItem{Fruit: key, Amount: uint32(amount)}
 			fruitRecords = append(fruitRecords, fruitRecord)
-		}	
+		}
 	}
 
 	return clientID, fruitRecords, len(fruitRecords) == 0, nil

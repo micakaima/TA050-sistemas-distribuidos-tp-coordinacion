@@ -2,22 +2,22 @@ package middleware
 
 import (
 	"fmt"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"math/rand"
-	amqp "github.com/rabbitmq/amqp091-go" 
 )
 
 type ExchangeMiddleware struct {
-	conn 		*amqp.Connection
-	ch			*amqp.Channel
-	exchange	string
-	keys		[]string	 
-	consuming 	bool
-	consumerTag	string
+	conn        *amqp.Connection
+	ch          *amqp.Channel
+	exchange    string
+	keys        []string
+	consuming   bool
+	consumerTag string
 }
 
 func NewExchangeMiddleware(exchange string, keys []string, connectionSettings ConnSettings) (*ExchangeMiddleware, error) {
-	url_path := fmt.Sprintf("amqp://guest:guest@%s:%d/",  connectionSettings.Hostname, connectionSettings.Port)
- 	conn, err := amqp.Dial(url_path)
+	url_path := fmt.Sprintf("amqp://guest:guest@%s:%d/", connectionSettings.Hostname, connectionSettings.Port)
+	conn, err := amqp.Dial(url_path)
 	if err != nil {
 		return nil, ErrMessageMiddlewareDisconnected
 	}
@@ -29,43 +29,43 @@ func NewExchangeMiddleware(exchange string, keys []string, connectionSettings Co
 	}
 
 	err = ch.ExchangeDeclare(
-		exchange,   // name
-		"direct", 	// type   
-		false,     	// durability
-		false,    	// auto-deleted
-		false,    	// internal
-		false,    	// no-wait
-		nil,      	// arguments
+		exchange, // name
+		"direct", // type
+		false,    // durability
+		false,    // auto-deleted
+		false,    // internal
+		false,    // no-wait
+		nil,      // arguments
 	)
-    if err != nil {
+	if err != nil {
 		ch.Close()
 		conn.Close()
 		return nil, ErrMessageMiddlewareMessage
 	}
 
-	return &ExchangeMiddleware {
-		conn: conn,
-		ch: ch,
-		exchange: exchange,
-		keys: keys,
+	return &ExchangeMiddleware{
+		conn:      conn,
+		ch:        ch,
+		exchange:  exchange,
+		keys:      keys,
 		consuming: false,
 	}, nil
 }
 
 func (e *ExchangeMiddleware) StartConsuming(callbackFunc func(msg Message, ack func(), nack func())) error {
-	if e.consuming{
+	if e.consuming {
 		return ErrMessageMiddlewareMessage
 	}
 
 	q, err := e.ch.QueueDeclare(
-		"",    // name 
+		"",    // name
 		false, // durability
-		true,  // delete when unused  
+		true,  // delete when unused
 		true,  // exclusive
 		false, // no-wait
 		nil,   // arguments
 	)
-    if err != nil {
+	if err != nil {
 		if e.conn.IsClosed() {
 			return ErrMessageMiddlewareDisconnected
 		}
@@ -74,8 +74,8 @@ func (e *ExchangeMiddleware) StartConsuming(callbackFunc func(msg Message, ack f
 
 	for _, key := range e.keys {
 		err := e.ch.QueueBind(
-			q.Name, 	// queue name
-			key,     	// routing key
+			q.Name,     // queue name
+			key,        // routing key
 			e.exchange, // exchange
 			false,
 			nil,
@@ -87,16 +87,16 @@ func (e *ExchangeMiddleware) StartConsuming(callbackFunc func(msg Message, ack f
 			return ErrMessageMiddlewareMessage
 		}
 	}
-	
+
 	e.consumerTag = fmt.Sprintf("%s-%d", e.exchange, rand.Uint64())
 	msgs, err := e.ch.Consume(
-			q.Name, 			// queue
-			e.consumerTag,     	// consumer
-			false,   			// auto-ack
-			false,  			// exclusive
-			false,  			// no-local
-			false,  			// no-wait
-			nil,    			// args
+		q.Name,        // queue
+		e.consumerTag, // consumer
+		false,         // auto-ack
+		false,         // exclusive
+		false,         // no-local
+		false,         // no-wait
+		nil,           // args
 	)
 	if err != nil {
 		if e.conn.IsClosed() {
@@ -109,9 +109,9 @@ func (e *ExchangeMiddleware) StartConsuming(callbackFunc func(msg Message, ack f
 		callbackFunc(
 			Message{Body: string(d.Body)},
 			func() { d.Ack(false) },
-			func() { d.Nack(false, false)},
+			func() { d.Nack(false, false) },
 		)
-			
+
 	}
 	e.consuming = false
 
@@ -137,10 +137,10 @@ func (e *ExchangeMiddleware) StopConsuming() error {
 
 func (e *ExchangeMiddleware) Send(msg Message) error {
 	for _, key := range e.keys {
-		if err := e.SendToKey(msg, key); err != nil{
+		if err := e.SendToKey(msg, key); err != nil {
 			return err
 		}
-	}	
+	}
 	return nil
 }
 
@@ -168,18 +168,18 @@ func (e *ExchangeMiddleware) SendToKey(msg Message, key string) error {
 	}
 	err := e.ch.Publish(
 		e.exchange, // exchange
-		key,     	// routing key
-		false, 		// mandatory
-		false,  	// immediate
+		key,        // routing key
+		false,      // mandatory
+		false,      // immediate
 		amqp.Publishing{
-				ContentType: "text/plain",
-				Body:        []byte(msg.Body),
+			ContentType: "text/plain",
+			Body:        []byte(msg.Body),
 		})
 	if err != nil {
 		if e.conn.IsClosed() {
 			return ErrMessageMiddlewareDisconnected
 		}
 		return ErrMessageMiddlewareMessage
-	}	
+	}
 	return nil
 }

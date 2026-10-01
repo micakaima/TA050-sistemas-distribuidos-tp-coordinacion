@@ -2,7 +2,11 @@ package join
 
 import (
 	"log/slog"
+	"os"
+	"os/signal"
 	"sort"
+	"sync"
+	"syscall"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
@@ -22,12 +26,12 @@ type JoinConfig struct {
 }
 
 type Join struct {
-	inputQueue  middleware.Middleware
-	outputQueue middleware.Middleware
-	topByClient map[string][]fruititem.FruitItem
-	EOFReceived map[string]int
+	inputQueue        middleware.Middleware
+	outputQueue       middleware.Middleware
+	topByClient       map[string][]fruititem.FruitItem
+	EOFReceived       map[string]int
 	aggregationAmount int
-	topSize     int
+	topSize           int
 }
 
 func NewJoin(config JoinConfig) (*Join, error) {
@@ -45,19 +49,35 @@ func NewJoin(config JoinConfig) (*Join, error) {
 	}
 
 	return &Join{
-		inputQueue: inputQueue, 
-		outputQueue: outputQueue, 
-		topByClient: map[string][]fruititem.FruitItem{}, 
-		EOFReceived: map[string]int{}, 
-		aggregationAmount: config.AggregationAmount, 
-		topSize: config.TopSize,
+		inputQueue:        inputQueue,
+		outputQueue:       outputQueue,
+		topByClient:       map[string][]fruititem.FruitItem{},
+		EOFReceived:       map[string]int{},
+		aggregationAmount: config.AggregationAmount,
+		topSize:           config.TopSize,
 	}, nil
 }
 
 func (join *Join) Run() {
-	join.inputQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
-		join.handleMessage(msg, ack, nack)
-	})
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+		join.inputQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
+			join.handleMessage(msg, ack, nack)
+		})
+	}()
+
+	<-signals
+	if err := join.inputQueue.StopConsuming(); err != nil {
+		slog.Error("While stopping input queue", "err", err)
+	}
+	wg.Wait()
+	join.shutdown()
 }
 
 func (join *Join) handleMessage(msg middleware.Message, ack func(), nack func()) {
@@ -83,7 +103,7 @@ func (join *Join) handleDataMessage(clientID string, fruitRecords []fruititem.Fr
 		join.topByClient[clientID] = fruitRecords
 		return
 	}
-	
+
 	top = append(top, fruitRecords...)
 	sort.SliceStable(top, func(i, j int) bool {
 		return top[j].Less(top[i])
@@ -93,7 +113,7 @@ func (join *Join) handleDataMessage(clientID string, fruitRecords []fruititem.Fr
 }
 
 func (join *Join) handleEndOfRecordsMessage(clientID string) error {
-	join.EOFReceived[clientID]++ 
+	join.EOFReceived[clientID]++
 	if join.EOFReceived[clientID] < join.aggregationAmount {
 		return nil
 	}
@@ -108,5 +128,14 @@ func (join *Join) handleEndOfRecordsMessage(clientID string) error {
 	}
 	delete(join.EOFReceived, clientID)
 	delete(join.topByClient, clientID)
-	return nil	
+	return nil
+}
+
+func (join *Join) shutdown() {
+	if err := join.inputQueue.Close(); err != nil {
+		slog.Error("While closing input queue", "err", err)
+	}
+	if err := join.outputQueue.Close(); err != nil {
+		slog.Error("While closing output queue", "err", err)
+	}
 }

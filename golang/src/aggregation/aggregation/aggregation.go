@@ -3,7 +3,11 @@ package aggregation
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"os/signal"
 	"sort"
+	"sync"
+	"syscall"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
@@ -49,17 +53,33 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 	return &Aggregation{
 		outputQueue:   outputQueue,
 		inputExchange: inputExchange,
-		fruitItemMaps:  map[string]map[string]fruititem.FruitItem{},
-		EOFReceived:    map[string]int{},
+		fruitItemMaps: map[string]map[string]fruititem.FruitItem{},
+		EOFReceived:   map[string]int{},
 		topSize:       config.TopSize,
-		sumAmount:  config.SumAmount,
+		sumAmount:     config.SumAmount,
 	}, nil
 }
 
 func (aggregation *Aggregation) Run() {
-	aggregation.inputExchange.StartConsuming(func(msg middleware.Message, ack, nack func()) {
-		aggregation.handleMessage(msg, ack, nack)
-	})
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+		aggregation.inputExchange.StartConsuming(func(msg middleware.Message, ack, nack func()) {
+			aggregation.handleMessage(msg, ack, nack)
+		})
+	}()
+
+	<-signals
+	if err := aggregation.inputExchange.StopConsuming(); err != nil {
+		slog.Error("While stopping input exchange", "err", err)
+	}
+	wg.Wait()
+	aggregation.shutdown()
 }
 
 func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func(), nack func()) {
@@ -83,7 +103,7 @@ func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func()
 
 func (aggregation *Aggregation) handleEndOfRecordsMessage(clientID string) error {
 	slog.Info("Received End Of Records message")
-	aggregation.EOFReceived[clientID]++ 
+	aggregation.EOFReceived[clientID]++
 
 	if aggregation.EOFReceived[clientID] < aggregation.sumAmount {
 		return nil
@@ -139,4 +159,13 @@ func (aggregation *Aggregation) buildFruitTop(clientID string) []fruititem.Fruit
 	})
 	finalTopSize := min(aggregation.topSize, len(fruitItems))
 	return fruitItems[:finalTopSize]
+}
+
+func (aggregation *Aggregation) shutdown() {
+	if err := aggregation.inputExchange.Close(); err != nil {
+		slog.Error("While closing input exchange", "err", err)
+	}
+	if err := aggregation.outputQueue.Close(); err != nil {
+		slog.Error("While closing output queue", "err", err)
+	}
 }

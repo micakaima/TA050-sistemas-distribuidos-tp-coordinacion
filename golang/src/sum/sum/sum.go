@@ -2,9 +2,12 @@ package sum
 
 import (
 	"fmt"
-	"log/slog"
-	"sync"
 	"hash/fnv"
+	"log/slog"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
@@ -22,16 +25,16 @@ type SumConfig struct {
 	AggregationPrefix string
 }
 
-//TODO: revisar si conviene guardar la config en el struct
+// TODO: revisar si conviene guardar la config en el struct
 type Sum struct {
 	inputQueue     middleware.Middleware
 	outputExchange *middleware.ExchangeMiddleware
 	fruitItemMaps  map[string]map[string]fruititem.FruitItem
 
-	controlInQueue middleware.Middleware
+	controlInQueue  middleware.Middleware
 	controlOutQueue middleware.Middleware
-	sendingEOF map[string]bool
-	mutex sync.Mutex
+	sendingEOF      map[string]bool
+	mutex           sync.Mutex
 
 	aggregationAmount int
 	aggregationPrefix string
@@ -48,15 +51,15 @@ func NewSum(config SumConfig) (*Sum, error) {
 	controlInQueueName := fmt.Sprintf("%s_%d_control", config.SumPrefix, config.Id)
 	controlInQueue, err := middleware.CreateQueueMiddleware(controlInQueueName, connSettings)
 	if err != nil {
-		inputQueue.Close() 
+		inputQueue.Close()
 		return nil, err
 	}
 
-	successorId := (config.Id +1) % config.SumAmount
+	successorId := (config.Id + 1) % config.SumAmount
 	controlOutQueueName := fmt.Sprintf("%s_%d_control", config.SumPrefix, successorId)
 	controlOutQueue, err := middleware.CreateQueueMiddleware(controlOutQueueName, connSettings)
 	if err != nil {
-		inputQueue.Close() 
+		inputQueue.Close()
 		controlInQueue.Close()
 		return nil, err
 	}
@@ -68,32 +71,54 @@ func NewSum(config SumConfig) (*Sum, error) {
 
 	outputExchange, err := middleware.NewExchangeMiddleware(config.AggregationPrefix, outputExchangeRouteKeys, connSettings)
 	if err != nil {
-		inputQueue.Close() 
+		inputQueue.Close()
 		controlInQueue.Close()
 		controlOutQueue.Close()
 		return nil, err
 	}
 
 	return &Sum{
-		inputQueue:     inputQueue,
-		outputExchange: outputExchange,
-		fruitItemMaps:  map[string]map[string]fruititem.FruitItem{},
-		controlInQueue: controlInQueue,
-		controlOutQueue: controlOutQueue, 
-		sendingEOF:   map[string]bool{},
+		inputQueue:        inputQueue,
+		outputExchange:    outputExchange,
+		fruitItemMaps:     map[string]map[string]fruititem.FruitItem{},
+		controlInQueue:    controlInQueue,
+		controlOutQueue:   controlOutQueue,
+		sendingEOF:        map[string]bool{},
 		aggregationAmount: config.AggregationAmount,
 		aggregationPrefix: config.AggregationPrefix,
 	}, nil
 }
 
 func (sum *Sum) Run() {
-	go sum.inputQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
-		sum.handleMessage(msg, ack, nack)
-	})
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 
-	sum.controlInQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
-		sum.handleControlMessage(msg, ack, nack)
-	})
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		sum.inputQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
+			sum.handleMessage(msg, ack, nack)
+		})
+	}()
+
+	go func() {
+		defer wg.Done()
+		sum.controlInQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
+			sum.handleControlMessage(msg, ack, nack)
+		})
+	}()
+
+	<-signals
+	if err := sum.inputQueue.StopConsuming(); err != nil {
+		slog.Error("While stopping input queue ", "err", err)
+	}
+	if err := sum.controlInQueue.StopConsuming(); err != nil {
+		slog.Error("While stopping control input queue ", "err", err)
+	}
+	wg.Wait()
+	sum.shutdown()
 }
 
 func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
@@ -109,7 +134,7 @@ func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 		sum.mutex.Lock()
 		sum.sendingEOF[clientID] = true
 		sum.mutex.Unlock()
-		
+
 		if err := sendEOFMessage(clientID, sum.controlOutQueue); err != nil {
 			slog.Error("While sending EOF message", "err", err)
 			return
@@ -140,7 +165,7 @@ func (sum *Sum) handleEndOfRecordMessage(clientID string) error {
 			slog.Debug("While serializing message", "err", err)
 			return err
 		}
-		key := sum.routeKeyForFruit(fruit, clientID) 
+		key := sum.routeKeyForFruit(fruit)
 		if err := sum.outputExchange.SendToKey(*message, key); err != nil {
 			slog.Debug("While sending message", "err", err)
 			return err
@@ -186,11 +211,11 @@ func (sum *Sum) handleControlMessage(msg middleware.Message, ack func(), nack fu
 	if isEof {
 		sum.mutex.Lock()
 		if sum.sendingEOF[clientID] {
-			delete(sum.sendingEOF,clientID)
-			sum.mutex.Unlock()	
+			delete(sum.sendingEOF, clientID)
+			sum.mutex.Unlock()
 			return
 		}
-		sum.mutex.Unlock()	
+		sum.mutex.Unlock()
 
 		if err := sendEOFMessage(clientID, sum.controlOutQueue); err != nil {
 			slog.Error("While sending EOF message", "err", err)
@@ -213,7 +238,7 @@ func sendEOFMessage(clientID string, midd middleware.Middleware) error {
 	}
 	if err := midd.Send(*message); err != nil {
 		slog.Debug("While sending EOF message", "err", err)
-		return err  
+		return err
 	}
 	return nil
 }
@@ -224,4 +249,19 @@ func (sum *Sum) routeKeyForFruit(fruit string) string {
 	h.Write([]byte(fruit))
 	idx := int(h.Sum32()) % sum.aggregationAmount
 	return fmt.Sprintf("%s_%d", sum.aggregationPrefix, idx)
+}
+
+func (sum *Sum) shutdown() {
+	if err := sum.inputQueue.Close(); err != nil {
+		slog.Error("While closing input queue ", "err", err)
+	}
+	if err := sum.controlInQueue.Close(); err != nil {
+		slog.Error("While closing control input queue ", "err", err)
+	}
+	if err := sum.controlOutQueue.Close(); err != nil {
+		slog.Error("While closing control output queue ", "err", err)
+	}
+	if err := sum.outputExchange.Close(); err != nil {
+		slog.Error("While closing output exchange ", "err", err)
+	}
 }
